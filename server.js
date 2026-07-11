@@ -85,7 +85,7 @@ class AudiotekaProvider {
     this.id = 'audioteka';
     this.name = 'Audioteka';
     this.baseUrl = 'https://audioteka.com';
-    this.searchUrl = language === 'cz' ? 'https://audioteka.com/cz/vyhledavani' : 'https://audioteka.com/pl/szukaj';
+    this.searchUrl = language === 'cz' ? 'https://audioteka.com/cz/vyhledavani/' : 'https://audioteka.com/pl/szukaj/';
   }
 
   async searchBooks(query, author = '', requestId = 'req') {
@@ -105,19 +105,32 @@ class AudiotekaProvider {
   console.log(`[${requestId}] Search URL:`, searchUrl);
 
       const matches = [];
-      const $books = $('.adtk-item.teaser_teaser__FDajW');
+      // Use prefix class selectors so hashed CSS-module suffixes (e.g. __FDajW)
+      // keep working if they change. The old `.adtk-item` class was removed from the site.
+      const $books = $('[class*="teaser_teaser__"]');
   console.log(`[${requestId}] Number of books found:`, $books.length);
 
       $books.each((index, element) => {
         const $book = $(element);
         
-        const title = $book.find('.teaser_title__hDeCG').text().trim();
-        const bookUrl = this.baseUrl + $book.find('.teaser_link__fxVFQ').attr('href');
-        const authors = [$book.find('.teaser_author__LWTRi').text().trim()];
-        const cover = cleanCoverUrl($book.find('.teaser_coverImage__YMrBt').attr('src'));
-        const rating = parseFloat($book.find('.teaser-footer_rating__TeVOA').text().trim()) || null;
+        const title = $book.find('[class*="teaser_title__"]').first().text().trim();
+        const href = $book.find('a[class*="teaser_link__"]').attr('href');
+        const bookUrl = href ? this.baseUrl + href : '';
+        const authors = [$book.find('[class*="teaser_author__"]').first().text().trim()];
+        // Cover image may be wrapped in <noscript> (lazy loading), which cheerio
+        // exposes as raw text — parse it separately if the direct lookup fails.
+        let coverSrc = $book.find('img[class*="teaser_coverImage__"]').attr('src');
+        if (!coverSrc) {
+          const noscriptHtml = $book.find('noscript').html();
+          if (noscriptHtml) {
+            coverSrc = cheerio.load(noscriptHtml)('img').attr('src');
+          }
+        }
+        const cover = cleanCoverUrl(coverSrc);
+        const rating = parseFloat($book.find('[class*="teaser-footer_rating__"]').first().text().trim().replace(',', '.')) || null;
 
-        const id = $book.attr('data-item-id') || bookUrl.split('/').pop();
+        // data-item-id is no longer present; derive id from the URL slug (ignore trailing slash)
+        const id = $book.attr('data-item-id') || bookUrl.split('/').filter(Boolean).pop();
 
         if (title && bookUrl && authors.length > 0) {
           matches.push({
@@ -313,7 +326,17 @@ class AudiotekaProvider {
         
         console.log(`[${requestId}] Duration extracted: "${durationStr}"`);
       } else {
-        durationStr = $('.product-table tr:contains("Długość") td:last-child').text().trim();
+        // Polish site now uses dt/dd structure
+        durationStr = $('dt').filter(function() {
+          return $(this).text().trim() === 'Długość';
+        }).next('dd').text().trim();
+
+        // Fallback: old table structure
+        if (!durationStr) {
+          durationStr = $('.product-table tr:contains("Długość") td:last-child').text().trim();
+        }
+
+        console.log(`[${requestId}] Duration extracted: "${durationStr}"`);
       }
 
       const durationInMinutes = parseDuration(durationStr);
@@ -347,8 +370,17 @@ class AudiotekaProvider {
         
         console.log(`Publisher extracted: "${publisher}"`);
       } else {
-        publisher = $('.product-table tr:contains("Wydawca") td:last-child a').text().trim() ||
-                    $('.product-table tr:contains("Wydawca") td:last-child').text().trim();
+        // Polish site now uses dt/dd structure
+        const publisherCell = $('dt').filter(function() {
+          return $(this).text().trim() === 'Wydawca';
+        }).next('dd');
+        publisher = publisherCell.find('a').first().text().trim() || publisherCell.text().trim();
+
+        // Fallback: old table structure
+        if (!publisher) {
+          publisher = $('.product-table tr:contains("Wydawca") td:last-child a').text().trim() ||
+                      $('.product-table tr:contains("Wydawca") td:last-child').text().trim();
+        }
       }
 
       // Get type - improved selectors for Czech site
@@ -379,7 +411,15 @@ class AudiotekaProvider {
         
         console.log(`Type extracted: "${type}"`);
       } else {
-        type = $('.product-table tr:contains("Typ") td:last-child').text().trim();
+        // Polish site now uses dt/dd structure
+        type = $('dt').filter(function() {
+          return $(this).text().trim() === 'Typ';
+        }).next('dd').text().trim();
+
+        // Fallback: old table structure
+        if (!type) {
+          type = $('.product-table tr:contains("Typ") td:last-child').text().trim();
+        }
       }
 
       // Get categories/genres - improved selectors for Czech site
@@ -417,9 +457,24 @@ class AudiotekaProvider {
         
         console.log(`Genres extracted: ${JSON.stringify(genres)}`);
       } else {
-        genres = $('.product-table tr:contains("Kategoria") td:last-child a')
+        // Polish site now uses dt/dd structure
+        const genresCell = $('dt').filter(function() {
+          return $(this).text().trim() === 'Kategoria';
+        }).next('dd');
+        genres = genresCell.find('a')
           .map((i, el) => $(el).text().trim())
           .get();
+        if (genres.length === 0) {
+          const genreText = genresCell.text().trim();
+          if (genreText) genres = [genreText];
+        }
+
+        // Fallback: old table structure
+        if (genres.length === 0) {
+          genres = $('.product-table tr:contains("Kategoria") td:last-child a')
+            .map((i, el) => $(el).text().trim())
+            .get();
+        }
       }
 
       // Get language - improved selectors for Czech site
